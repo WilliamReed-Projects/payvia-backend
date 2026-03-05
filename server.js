@@ -150,25 +150,25 @@ function verificationMailHtml(code) {
   <div style="background:#0f0f0f;padding:0;margin:0;font-family:'Segoe UI',Arial,sans-serif;color:#fff">
     <div style="max-width:420px;margin:auto;background:#191919;border-radius:14px;box-shadow:0 8px 38px #0006;overflow:hidden">
       <div style="background:linear-gradient(90deg,#2e0249 0,#57059e 70%,#0f0f0f 100%);padding:32px 0 24px 0;text-align:center">
-        <span style="font-size:2.2rem;letter-spacing:0.09em;font-weight:700;color:#fff;display:block;margin-bottom:10px;">Soldora</span>
+        <span style="font-size:2.2rem;letter-spacing:0.09em;font-weight:700;color:#fff;display:block;margin-bottom:10px;">Payvia</span>
       </div>
 
       <div style="padding:32px 24px 24px 24px">
         <div style="font-size:15px;color:#bbb;text-align:center;margin-bottom:12px">Verification de votre adresse e-mail</div>
         <div style="font-size:15px;margin-bottom:30px;text-align:center">
-          Voici votre code de verification pour securiser votre compte Soldora :
+          Voici votre code de verification pour securiser votre compte Payvia :
         </div>
         <div style="font-size:2.3rem;font-weight:bold;letter-spacing:0.2em;text-align:center;background:#181b1e;border-radius:14px;padding:16px 0;color:#19c7ff;margin-bottom:28px;box-shadow:0 2px 18px #57059e20">
           ${code}
         </div>
 
         <div style="background:#232333;border-radius:12px;padding:14px 12px 10px 12px;color:#b2b2b2;font-size:13px;line-height:1.4;margin-bottom:18px;box-shadow:0 1px 4px #0003;">
-          <b>Ajoutez Soldora.fr a vos favoris</b> pour eviter toute tentative de phishing. <br>
+          <b>Ajoutez Payvia.fr a vos favoris</b> pour eviter toute tentative de phishing. <br>
           Ne cliquez jamais sur un lien recu par SMS ou e-mail si vous avez le moindre doute.
         </div>
 
         <div style="text-align:center;margin-bottom:20px;color:#adadad;font-size:13px">
-          Pour plus d'informations, consultez <a href="https://soldora.fr" style="color:#19c7ff;text-decoration:underline" target="_blank">notre site officiel</a>.
+          Pour plus d'informations, consultez <a href="https://payvia.fr" style="color:#19c7ff;text-decoration:underline" target="_blank">notre site officiel</a>.
         </div>
 
         <div style="border-top:1px solid #222;margin-top:26px;padding-top:10px;color:#707070;font-size:11px;text-align:center">
@@ -177,7 +177,35 @@ function verificationMailHtml(code) {
       </div>
 
       <div style="background:#181b1e;text-align:center;padding:14px 0 12px 0;color:#888;font-size:12px;border-top:1px solid #232333;">
-        © 2026 Soldora.fr • <a href="https://soldora.fr" style="color:#19c7ff;text-decoration:none;">Soldora.fr</a>
+        © 2026 Payvia.fr • <a href="https://payvia.fr" style="color:#19c7ff;text-decoration:none;">Payvia.fr</a>
+      </div>
+    </div>
+  </div>`;
+}
+
+function pendingPaymentMailHtml({ commandeNum, total, cryptoName, cryptoCode }) {
+  return `
+  <div style="background:#0f0f0f;padding:0;margin:0;font-family:'Segoe UI',Arial,sans-serif;color:#fff">
+    <div style="max-width:460px;margin:auto;background:#191919;border-radius:14px;box-shadow:0 8px 38px #0006;overflow:hidden">
+      <div style="background:linear-gradient(90deg,#2e0249 0,#57059e 70%,#0f0f0f 100%);padding:28px 0 20px 0;text-align:center">
+        <span style="font-size:2rem;letter-spacing:.08em;font-weight:700;color:#fff;display:block;">Payvia</span>
+      </div>
+      <div style="padding:28px 24px 22px 24px">
+        <div style="font-size:20px;font-weight:700;margin-bottom:8px;text-align:center;color:#fff">Paiement en attente</div>
+        <div style="font-size:14px;color:#b8b8b8;text-align:center;margin-bottom:20px">
+          Nous avons bien recu votre demande. Votre commande sera validee des reception du paiement.
+        </div>
+        <div style="background:#181b1e;border:1px solid #2a2a38;border-radius:12px;padding:14px 14px 10px 14px;margin-bottom:18px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-size:14px"><span style="color:#9ea3b3">Commande</span><b style="color:#fff">${commandeNum}</b></div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-size:14px"><span style="color:#9ea3b3">Montant</span><b style="color:#19c7ff">${total} EUR</b></div>
+          <div style="display:flex;justify-content:space-between;font-size:14px"><span style="color:#9ea3b3">Crypto</span><b style="color:#fff">${cryptoName || cryptoCode || 'N/A'}</b></div>
+        </div>
+        <div style="font-size:13px;color:#9ea3b3;line-height:1.5;text-align:center">
+          Si vous n'etes pas a l'origine de cette demande, contactez notre support via <a href="https://payvia.fr/contact.html" style="color:#19c7ff;text-decoration:underline">payvia.fr</a>.
+        </div>
+      </div>
+      <div style="background:#181b1e;text-align:center;padding:12px 0 12px 0;color:#888;font-size:12px;border-top:1px solid #232333;">
+        © 2026 Payvia.fr • <a href="https://payvia.fr" style="color:#19c7ff;text-decoration:none;">Payvia.fr</a>
       </div>
     </div>
   </div>`;
@@ -210,7 +238,7 @@ async function sendCodeHandler(req, res) {
 
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_USER,
+        from: `Payvia <${process.env.EMAIL_USER}>`,
         to: email,
         subject: 'Votre code de verification',
         html: verificationMailHtml(code)
@@ -426,10 +454,11 @@ app.post('/api/send-pending-payment-mail', async (req, res) => {
 
   try {
     await transporter.sendMail({
-      from: process.env.EMAIL_USER,
+      from: `Payvia <${process.env.EMAIL_USER}>`,
       to: email,
       subject,
-      text
+      text,
+      html: pendingPaymentMailHtml({ commandeNum, total, cryptoName, cryptoCode })
     });
     return res.json({ success: true });
   } catch (err) {
