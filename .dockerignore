@@ -1,0 +1,7 @@
+node_modules
+node_modules/
+npm-debug.log*
+.env
+# Keep runtime DB clean from transient files
+*.sqlite-shm
+*.sqlite-wal
