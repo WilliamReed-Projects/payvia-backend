@@ -5,6 +5,7 @@ const https = require('https');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const sqlite3 = require('sqlite3').verbose();
+
 const db = new sqlite3.Database('./data.sqlite');
 const app = express();
 
@@ -23,7 +24,8 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Ensure required tables exist on startup.
+// Ensure required tables exist on startup
+// so a fresh Railway volume can boot without manual SQL setup.
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,12 +57,12 @@ db.serialize(() => {
   )`);
 });
 
-// Temporary in-memory storage of verification codes: email -> { code, expiresAt }
-const verificationCodes = new Map();
+const verificationCodes = new Map(); // email -> { code, expiresAt }
 
-// Setup nodemailer transporter with Gmail SMTP
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
@@ -101,11 +103,49 @@ function cryptoToCoinGeckoId(code) {
   return map[key] || null;
 }
 
+function verificationMailHtml(code) {
+  return `
+  <div style="background:#0f0f0f;padding:0;margin:0;font-family:'Segoe UI',Arial,sans-serif;color:#fff">
+    <div style="max-width:420px;margin:auto;background:#191919;border-radius:14px;box-shadow:0 8px 38px #0006;overflow:hidden">
+      <div style="background:linear-gradient(90deg,#2e0249 0,#57059e 70%,#0f0f0f 100%);padding:32px 0 24px 0;text-align:center">
+        <span style="font-size:2.2rem;letter-spacing:0.09em;font-weight:700;color:#fff;display:block;margin-bottom:10px;">Soldora</span>
+      </div>
+
+      <div style="padding:32px 24px 24px 24px">
+        <div style="font-size:15px;color:#bbb;text-align:center;margin-bottom:12px">Verification de votre adresse e-mail</div>
+        <div style="font-size:15px;margin-bottom:30px;text-align:center">
+          Voici votre code de verification pour securiser votre compte Soldora :
+        </div>
+        <div style="font-size:2.3rem;font-weight:bold;letter-spacing:0.2em;text-align:center;background:#181b1e;border-radius:14px;padding:16px 0;color:#19c7ff;margin-bottom:28px;box-shadow:0 2px 18px #57059e20">
+          ${code}
+        </div>
+
+        <div style="background:#232333;border-radius:12px;padding:14px 12px 10px 12px;color:#b2b2b2;font-size:13px;line-height:1.4;margin-bottom:18px;box-shadow:0 1px 4px #0003;">
+          <b>Ajoutez Soldora.fr a vos favoris</b> pour eviter toute tentative de phishing. <br>
+          Ne cliquez jamais sur un lien recu par SMS ou e-mail si vous avez le moindre doute.
+        </div>
+
+        <div style="text-align:center;margin-bottom:20px;color:#adadad;font-size:13px">
+          Pour plus d'informations, consultez <a href="https://soldora.fr" style="color:#19c7ff;text-decoration:underline" target="_blank">notre site officiel</a>.
+        </div>
+
+        <div style="border-top:1px solid #222;margin-top:26px;padding-top:10px;color:#707070;font-size:11px;text-align:center">
+          <span>Ce code expirera dans 10 minutes. Si vous n'etes pas a l'origine de cette demande, ignorez ce mail.</span>
+        </div>
+      </div>
+
+      <div style="background:#181b1e;text-align:center;padding:14px 0 12px 0;color:#888;font-size:12px;border-top:1px solid #232333;">
+        © 2026 Soldora.fr • <a href="https://soldora.fr" style="color:#19c7ff;text-decoration:none;">Soldora.fr</a>
+      </div>
+    </div>
+  </div>`;
+}
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/send-code', async (req, res) => {
+async function sendCodeHandler(req, res) {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email requis' });
 
@@ -118,40 +158,31 @@ app.post('/api/send-code', async (req, res) => {
       return res.status(409).json({ error: 'Cet email est deja enregistre' });
     }
 
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      return res.status(500).json({ error: 'SMTP non configure' });
+    }
+
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + 10 * 60 * 1000;
     verificationCodes.set(email, { code, expiresAt });
-
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      console.warn('SMTP non configure, mode debug code actif.');
-      return res.json({
-        message: 'Code genere (email non envoye)',
-        emailSent: false,
-        debugCode: code
-      });
-    }
 
     try {
       await transporter.sendMail({
         from: process.env.EMAIL_USER,
         to: email,
-        subject: 'Votre code de vérification',
-        text: `Votre code est : ${code}. Il expire dans 10 minutes.`
+        subject: 'Votre code de verification',
+        html: verificationMailHtml(code)
       });
-      console.log(`Code envoyé à ${email} : ${code}`);
-      res.json({ message: 'Code de verification envoye par email', emailSent: true });
+      console.log(`Code envoye a ${email}`);
+      return res.json({ message: 'Code de verification envoye par email', emailSent: true });
     } catch (error) {
-      console.error('Erreur lors de l\'envoi du mail:', error);
-      return res.json({
-        message: 'Code genere (email non envoye)',
-        emailSent: false,
-        debugCode: code
-      });
+      console.error('Erreur lors de l envoi du mail:', error);
+      return res.status(500).json({ error: 'Impossible d envoyer le mail' });
     }
   });
-});
+}
 
-app.post('/api/verify-code', (req, res) => {
+function verifyCodeHandler(req, res) {
   const { email, code } = req.body;
 
   if (!email || !code) {
@@ -176,9 +207,9 @@ app.post('/api/verify-code', (req, res) => {
   );
 
   return res.json({ success: true, message: 'Code valide avec succes', token });
-});
+}
 
-app.post('/api/register', (req, res) => {
+function registerHandler(req, res) {
   const {
     nom,
     prenom,
@@ -198,27 +229,15 @@ app.post('/api/register', (req, res) => {
   }
 
   const query = `
-    INSERT INTO users 
+    INSERT INTO users
     (nom, prenom, email, mot_de_passe, adresse, code_postal, ville, pays, code_parrain, telephone, date_naissance)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   db.run(
     query,
-    [
-      nom,
-      prenom,
-      email,
-      mot_de_passe,
-      adresse,
-      code_postal,
-      ville,
-      pays,
-      code_parrain,
-      telephone,
-      date_naissance
-    ],
-    function (err) {
+    [nom, prenom, email, mot_de_passe, adresse, code_postal, ville, pays, code_parrain, telephone, date_naissance],
+    function onInsert(err) {
       if (err) {
         if (err.code === 'SQLITE_CONSTRAINT') {
           return res.status(409).json({ error: 'User with this email already exists' });
@@ -233,28 +252,22 @@ app.post('/api/register', (req, res) => {
       });
     }
   );
-});
+}
 
-app.post('/api/login', (req, res) => {
+function loginHandler(req, res) {
   const { email, mot_de_passe } = req.body;
 
   if (!email || !mot_de_passe) {
     return res.status(400).json({ error: 'Email and password are required' });
   }
 
-  const query = `SELECT * FROM users WHERE email = ?`;
-
-  db.get(query, [email], (err, user) => {
+  db.get(`SELECT * FROM users WHERE email = ?`, [email], (err, user) => {
     if (err) {
       console.error('Database error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
 
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    if (mot_de_passe !== user.mot_de_passe) {
+    if (!user || mot_de_passe !== user.mot_de_passe) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
@@ -275,7 +288,12 @@ app.post('/api/login', (req, res) => {
       }
     });
   });
-});
+}
+
+app.post(['/api/send-code', '/send-code'], sendCodeHandler);
+app.post(['/api/verify-code', '/verify-code'], verifyCodeHandler);
+app.post(['/api/register', '/register'], registerHandler);
+app.post(['/api/login', '/signin'], loginHandler);
 
 app.post('/api/temoignage', (req, res) => {
   const { nom, prenom, date_achat, montant, produit, commentaire, note } = req.body;
@@ -294,7 +312,7 @@ app.post('/api/temoignage', (req, res) => {
     `INSERT INTO temoignages (nom, prenom, date_achat, montant, produit, commentaire, note, statut)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
     [nom, prenom, date_achat || null, Number.isFinite(safeMontant) ? safeMontant : null, produit, commentaire, safeNote],
-    function (err) {
+    function onInsert(err) {
       if (err) {
         console.error('Database error:', err);
         return res.status(500).json({ error: 'Impossible d enregistrer le temoignage' });
@@ -376,4 +394,4 @@ app.post('/api/send-pending-payment-mail', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`API démarrée sur http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`API demarree sur http://localhost:${PORT}`));
