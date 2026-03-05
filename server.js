@@ -122,6 +122,15 @@ app.post('/api/send-code', async (req, res) => {
     const expiresAt = Date.now() + 10 * 60 * 1000;
     verificationCodes.set(email, { code, expiresAt });
 
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      console.warn('SMTP non configure, mode debug code actif.');
+      return res.json({
+        message: 'Code genere (email non envoye)',
+        emailSent: false,
+        debugCode: code
+      });
+    }
+
     try {
       await transporter.sendMail({
         from: process.env.EMAIL_USER,
@@ -130,10 +139,14 @@ app.post('/api/send-code', async (req, res) => {
         text: `Votre code est : ${code}. Il expire dans 10 minutes.`
       });
       console.log(`Code envoyé à ${email} : ${code}`);
-      res.json({ message: 'Code de verification envoye par email' });
+      res.json({ message: 'Code de verification envoye par email', emailSent: true });
     } catch (error) {
       console.error('Erreur lors de l\'envoi du mail:', error);
-      res.status(500).json({ error: 'Impossible d envoyer le mail' });
+      return res.json({
+        message: 'Code genere (email non envoye)',
+        emailSent: false,
+        debugCode: code
+      });
     }
   });
 });
