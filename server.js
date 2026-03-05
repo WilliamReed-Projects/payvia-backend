@@ -71,19 +71,29 @@ const transporter = nodemailer.createTransport({
 
 function httpGetJson(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, (resp) => {
+    const req = https.get(url, {
+      headers: {
+        'User-Agent': 'payvia-backend/1.0',
+        'Accept': 'application/json'
+      }
+    }, (resp) => {
       let data = '';
       resp.on('data', (chunk) => {
         data += chunk;
       });
       resp.on('end', () => {
+        if (resp.statusCode && resp.statusCode >= 400) {
+          return reject(new Error(`HTTP ${resp.statusCode}`));
+        }
         try {
           resolve(JSON.parse(data));
         } catch (err) {
           reject(err);
         }
       });
-    }).on('error', reject);
+    });
+    req.setTimeout(7000, () => req.destroy(new Error('Request timeout')));
+    req.on('error', reject);
   });
 }
 
@@ -101,6 +111,38 @@ function cryptoToCoinGeckoId(code) {
     'USDT-TRC20': 'tether'
   };
   return map[key] || null;
+}
+
+function cryptoToTicker(code) {
+  const key = String(code || '').toUpperCase();
+  const map = {
+    BTC: 'BTC',
+    ETH: 'ETH',
+    LTC: 'LTC',
+    TRX: 'TRX',
+    BNB: 'BNB',
+    SOL: 'SOL',
+    USDT: 'USDT',
+    'USDT-ERC20': 'USDT',
+    'USDT-TRC20': 'USDT'
+  };
+  return map[key] || null;
+}
+
+async function getPriceFromCoinGecko(coinId) {
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coinId)}&vs_currencies=eur`;
+  const data = await httpGetJson(url);
+  const price = data && data[coinId] && data[coinId].eur;
+  if (!price) throw new Error('CoinGecko price unavailable');
+  return price;
+}
+
+async function getPriceFromCryptoCompare(ticker) {
+  const url = `https://min-api.cryptocompare.com/data/price?fsym=${encodeURIComponent(ticker)}&tsyms=EUR`;
+  const data = await httpGetJson(url);
+  const price = data && data.EUR;
+  if (!price) throw new Error('CryptoCompare price unavailable');
+  return price;
 }
 
 function verificationMailHtml(code) {
@@ -343,20 +385,23 @@ app.get('/api/temoignages-valides', (_req, res) => {
 app.get('/api/crypto-price', async (req, res) => {
   const { crypto } = req.query;
   const coinId = cryptoToCoinGeckoId(crypto);
-  if (!coinId) {
+  const ticker = cryptoToTicker(crypto);
+  if (!coinId || !ticker) {
     return res.status(400).json({ error: 'Crypto non supportee' });
   }
 
-  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coinId)}&vs_currencies=eur`;
   try {
-    const data = await httpGetJson(url);
-    const price = data && data[coinId] && data[coinId].eur;
-    if (!price) {
-      return res.status(502).json({ error: 'Prix indisponible' });
+    let price;
+    try {
+      price = await getPriceFromCoinGecko(coinId);
+    } catch (cgErr) {
+      console.warn('CoinGecko failed, fallback to CryptoCompare:', cgErr.message);
+      price = await getPriceFromCryptoCompare(ticker);
     }
+
     return res.json({ crypto: String(crypto || '').toUpperCase(), price });
   } catch (err) {
-    console.error('Crypto API error:', err);
+    console.error('Crypto API error:', err.message || err);
     return res.status(502).json({ error: 'Prix indisponible' });
   }
 });
