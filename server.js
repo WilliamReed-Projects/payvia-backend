@@ -1,46 +1,125 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');  
+const cors = require('cors');
+const https = require('https');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./data.sqlite');
 const app = express();
-app.use(cors());   
+
+const allowedOrigins = new Set([
+  'https://payvia.fr',
+  'https://www.payvia.fr',
+  'https://soldora.up.railway.app',
+  'https://soldora-backend-backend.up.railway.app'
+]);
+
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin || allowedOrigins.has(origin)) return cb(null, true);
+    return cb(new Error('Origin not allowed by CORS'));
+  }
+}));
 app.use(express.json());
 
-// Temporary in-memory storage of verification codes
-const verificationCodes = new Map(); // email -> { code, expiresAt }
+// Ensure required tables exist on startup.
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nom TEXT,
+    prenom TEXT,
+    email TEXT UNIQUE NOT NULL,
+    mot_de_passe TEXT NOT NULL,
+    adresse TEXT,
+    code_postal TEXT,
+    ville TEXT,
+    pays TEXT,
+    code_parrain TEXT,
+    telephone TEXT,
+    date_naissance TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS temoignages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nom TEXT NOT NULL,
+    prenom TEXT NOT NULL,
+    date_achat TEXT,
+    montant REAL,
+    produit TEXT NOT NULL,
+    commentaire TEXT NOT NULL,
+    note INTEGER NOT NULL,
+    statut TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+});
+
+// Temporary in-memory storage of verification codes: email -> { code, expiresAt }
+const verificationCodes = new Map();
 
 // Setup nodemailer transporter with Gmail SMTP
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: process.env.EMAIL_USER,  // from .env
-    pass: process.env.EMAIL_PASS   // from .env
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
   }
 });
 
-// POST /api/send-code
+function httpGetJson(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (resp) => {
+      let data = '';
+      resp.on('data', (chunk) => {
+        data += chunk;
+      });
+      resp.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
+function cryptoToCoinGeckoId(code) {
+  const key = String(code || '').toUpperCase();
+  const map = {
+    BTC: 'bitcoin',
+    ETH: 'ethereum',
+    LTC: 'litecoin',
+    TRX: 'tron',
+    BNB: 'binancecoin',
+    SOL: 'solana',
+    USDT: 'tether',
+    'USDT-ERC20': 'tether',
+    'USDT-TRC20': 'tether'
+  };
+  return map[key] || null;
+}
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
 app.post('/api/send-code', async (req, res) => {
   const { email } = req.body;
-  if (!email) return res.status(400).json({ error: "Email requis" });
+  if (!email) return res.status(400).json({ error: 'Email requis' });
 
-  // ✅ Check if email already registered
   db.get(`SELECT id FROM users WHERE email = ?`, [email], async (err, row) => {
     if (err) {
-      console.error("Database error:", err);
-      return res.status(500).json({ error: "Server error" });
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Server error' });
     }
     if (row) {
-      // Email exists -> return error
-      return res.status(409).json({ error: "Cet email est déjà enregistré" });
+      return res.status(409).json({ error: 'Cet email est deja enregistre' });
     }
 
-    // ✅ If not registered, continue sending code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // expires in 10 min
-
+    const expiresAt = Date.now() + 10 * 60 * 1000;
     verificationCodes.set(email, { code, expiresAt });
 
     try {
@@ -51,47 +130,40 @@ app.post('/api/send-code', async (req, res) => {
         text: `Votre code est : ${code}. Il expire dans 10 minutes.`
       });
       console.log(`Code envoyé à ${email} : ${code}`);
-      res.json({ message: "Code de vérification envoyé par email" });
+      res.json({ message: 'Code de verification envoye par email' });
     } catch (error) {
       console.error('Erreur lors de l\'envoi du mail:', error);
-      res.status(500).json({ error: "Impossible d'envoyer le mail" });
+      res.status(500).json({ error: 'Impossible d envoyer le mail' });
     }
   });
 });
 
-// POST /api/verify-code
 app.post('/api/verify-code', (req, res) => {
   const { email, code } = req.body;
 
   if (!email || !code) {
-    return res.status(400).json({ error: "Email et code requis" });
+    return res.status(400).json({ error: 'Email et code requis' });
   }
 
   const entry = verificationCodes.get(email);
-
   if (!entry) {
-    return res.status(404).json({ success: false, message: "Code non trouvé ou expiré" });
+    return res.status(404).json({ success: false, message: 'Code non trouve ou expire' });
   }
 
   const isValid = entry.code === code && entry.expiresAt > Date.now();
-
   if (!isValid) {
-    return res.status(401).json({ success: false, message: "Code invalide ou expiré" });
+    return res.status(401).json({ success: false, message: 'Code invalide ou expire' });
   }
 
-  // Code is valid — consume it
   verificationCodes.delete(email);
-
-  // Generate JWT token
   const token = jwt.sign(
-    { email }, 
-    process.env.JWT_SECRET || 'your_jwt_secret_key', 
+    { email },
+    process.env.JWT_SECRET || 'your_jwt_secret_key',
     { expiresIn: '1h' }
   );
 
-  return res.json({ success: true, message: "Code validé avec succès", token });
+  return res.json({ success: true, message: 'Code valide avec succes', token });
 });
-
 
 app.post('/api/register', (req, res) => {
   const {
@@ -108,9 +180,8 @@ app.post('/api/register', (req, res) => {
     date_naissance
   } = req.body;
 
-  // Basic validation
   if (!email || !mot_de_passe) {
-    return res.status(400).json({ error: "Email and password are required" });
+    return res.status(400).json({ error: 'Email and password are required' });
   }
 
   const query = `
@@ -137,42 +208,41 @@ app.post('/api/register', (req, res) => {
     function (err) {
       if (err) {
         if (err.code === 'SQLITE_CONSTRAINT') {
-          return res.status(409).json({ error: "User with this email already exists" });
+          return res.status(409).json({ error: 'User with this email already exists' });
         }
-        console.error("Database error:", err);
-        return res.status(500).json({ error: "Failed to register user" });
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Failed to register user' });
       }
 
       return res.status(201).json({
-        message: "User registered successfully",
+        message: 'User registered successfully',
         userId: this.lastID
       });
     }
   );
 });
 
-
 app.post('/api/login', (req, res) => {
   const { email, mot_de_passe } = req.body;
 
   if (!email || !mot_de_passe) {
-    return res.status(400).json({ error: "Email and password are required" });
+    return res.status(400).json({ error: 'Email and password are required' });
   }
 
   const query = `SELECT * FROM users WHERE email = ?`;
 
   db.get(query, [email], (err, user) => {
     if (err) {
-      console.error("Database error:", err);
-      return res.status(500).json({ error: "Internal server error" });
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
     }
 
     if (!user) {
-      return res.status(401).json({ error: "Invalid email or password" });
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     if (mot_de_passe !== user.mot_de_passe) {
-      return res.status(401).json({ error: "Invalid email or password" });
+      return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     const token = jwt.sign(
@@ -182,21 +252,115 @@ app.post('/api/login', (req, res) => {
     );
 
     return res.json({
-      message: "Login successful",
+      message: 'Login successful',
       token,
       user: {
         id: user.id,
         nom: user.nom,
         prenom: user.prenom,
         email: user.email
-        // never send mot_de_passe back
       }
     });
   });
 });
 
+app.post('/api/temoignage', (req, res) => {
+  const { nom, prenom, date_achat, montant, produit, commentaire, note } = req.body;
 
+  if (!nom || !prenom || !produit || !commentaire || !note) {
+    return res.status(400).json({ error: 'Champs temoignage manquants' });
+  }
 
+  const safeMontant = montant ? Number(montant) : null;
+  const safeNote = Number(note);
+  if (!Number.isInteger(safeNote) || safeNote < 1 || safeNote > 5) {
+    return res.status(400).json({ error: 'Note invalide (1-5)' });
+  }
 
-const PORT = process.env.PORT || 3000;
+  db.run(
+    `INSERT INTO temoignages (nom, prenom, date_achat, montant, produit, commentaire, note, statut)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+    [nom, prenom, date_achat || null, Number.isFinite(safeMontant) ? safeMontant : null, produit, commentaire, safeNote],
+    function (err) {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Impossible d enregistrer le temoignage' });
+      }
+      return res.status(201).json({ success: true, id: this.lastID });
+    }
+  );
+});
+
+app.get('/api/temoignages-valides', (_req, res) => {
+  db.all(
+    `SELECT nom, prenom, produit, commentaire, note, created_at
+     FROM temoignages
+     WHERE statut = 'valide'
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [],
+    (err, rows) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Impossible de recuperer les temoignages' });
+      }
+      return res.json(rows || []);
+    }
+  );
+});
+
+app.get('/api/crypto-price', async (req, res) => {
+  const { crypto } = req.query;
+  const coinId = cryptoToCoinGeckoId(crypto);
+  if (!coinId) {
+    return res.status(400).json({ error: 'Crypto non supportee' });
+  }
+
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(coinId)}&vs_currencies=eur`;
+  try {
+    const data = await httpGetJson(url);
+    const price = data && data[coinId] && data[coinId].eur;
+    if (!price) {
+      return res.status(502).json({ error: 'Prix indisponible' });
+    }
+    return res.json({ crypto: String(crypto || '').toUpperCase(), price });
+  } catch (err) {
+    console.error('Crypto API error:', err);
+    return res.status(502).json({ error: 'Prix indisponible' });
+  }
+});
+
+app.post('/api/send-pending-payment-mail', async (req, res) => {
+  const { email, commandeNum, total, cryptoName, cryptoCode } = req.body || {};
+  if (!email || !commandeNum || !total) {
+    return res.status(400).json({ error: 'Champs manquants' });
+  }
+
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    return res.status(500).json({ error: 'SMTP non configure' });
+  }
+
+  const subject = `Paiement en attente - commande ${commandeNum}`;
+  const text = [
+    'Votre commande est en attente de validation.',
+    `Commande: ${commandeNum}`,
+    `Montant: ${total} EUR`,
+    `Crypto: ${cryptoName || cryptoCode || 'N/A'}`
+  ].join('\n');
+
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject,
+      text
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Mail error:', err);
+    return res.status(500).json({ error: 'Envoi email impossible' });
+  }
+});
+
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log(`API démarrée sur http://localhost:${PORT}`));
